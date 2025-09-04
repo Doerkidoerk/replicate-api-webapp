@@ -16,19 +16,26 @@ import mimetypes
 import os
 import secrets as pysecrets
 from dataclasses import dataclass
-from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
 
 import replicate
-import requests
 import streamlit as st
 import streamlit_authenticator as stauth
 import toml
 import yaml
 from PIL import Image
 from yaml.loader import SafeLoader
+from replicate_api import (
+    ensure_save_dir,
+    get_replicate_client,
+    image_to_png_buffer,
+    list_images,
+    run_inference,
+    save_and_show_images,
+    save_bytes_as_image_show,
+)
 
 # =========================
 # Konstante Pfade & Limits
@@ -37,7 +44,6 @@ APP_TITLE = "Flux – Bildgenerator & Upscaler"
 SAVE_DIR = Path("./KI-Bilder")
 CONFIG_PATH = Path(".streamlit/config.yaml")
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
-HTTP_TIMEOUT = 45  # Sekunden
 
 # Modelle
 MODELS: Dict[str, str] = {
@@ -294,50 +300,10 @@ def get_replicate_client(api_token: Optional[str]) -> replicate.Client:
     return replicate.Client(api_token=token)
 
 
-@st.cache_data(show_spinner=False)
-def list_images(folder: Path) -> List[str]:
-    """Liest verfügbares Bild-Inventar im Speicherordner (einfach gecacht)."""
-    supported = {".png", ".jpg", ".jpeg", ".webp"}
-    if not folder.exists():
-        return []
-    return sorted([p.name for p in folder.iterdir() if p.suffix.lower() in supported])
-
-
-def safe_unique_filename(suffix: str, prefix: str = "image") -> str:
-    """Erzeugt einen eindeutigen, sicheren Dateinamen mit Zeitstempel."""
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    suffix = suffix if suffix.startswith(".") else f".{suffix}"
-    return f"{prefix}_{ts}{suffix}"
-
-
 def guess_mime(filename: str) -> str:
     """Bestimme den MIME-Type eines Dateinamens."""
     mt, _ = mimetypes.guess_type(filename)
     return mt or "application/octet-stream"
-
-
-def ensure_save_dir(path: Path) -> None:
-    """Stellt sicher, dass der Zielordner existiert."""
-    path.mkdir(parents=True, exist_ok=True)
-
-
-def download_image(url: str, dest: Path) -> None:
-    """Lädt ein Bild via HTTP herunter (mit Timeout & Stream) und speichert es."""
-    with requests.Session() as s:
-        with s.get(url, stream=True, timeout=HTTP_TIMEOUT) as r:
-            r.raise_for_status()
-            with dest.open("wb") as f:
-                for chunk in r.iter_content(chunk_size=64 * 1024):
-                    if chunk:
-                        f.write(chunk)
-
-
-def image_to_png_buffer(img: Image.Image) -> BytesIO:
-    """Konvertiert ein PIL-Bild zu PNG in einen BytesIO-Buffer (verlustfrei, Alpha ok)."""
-    buf = BytesIO()
-    img.save(buf, format="PNG", optimize=True)
-    buf.seek(0)
-    return buf
 
 
 # =====================
@@ -494,60 +460,6 @@ def handle_optional_image_upload() -> Optional[BytesIO]:
         return None
 
 
-def run_inference(
-    client: replicate.Client,
-    model_id: str,
-    inputs: Dict[str, Union[str, int, float, bool, BytesIO]],
-) -> List[str] | object:
-    try:
-        return client.run(model_id, input=inputs)
-    except Exception as e:
-        logger.exception("Replicate-Run fehlgeschlagen")
-        st.error(f"Fehler beim Ausführen des Modells '{model_id}': {e}")
-        return []
-
-
-def save_and_show_images(urls: List[str], desired_ext: str) -> None:
-    ensure_save_dir(SAVE_DIR)
-    for idx, url in enumerate(urls, start=1):
-        ext = f".{desired_ext.lower()}" if desired_ext else os.path.splitext(url.split("?")[0])[-1]
-        if ext.lower() not in {".png", ".jpg", ".jpeg", ".webp"}:
-            ext = ".jpg"
-
-        filename = safe_unique_filename(ext, prefix="generiertes_bild")
-        dest = SAVE_DIR / filename
-
-        try:
-            download_image(url, dest)
-            st.success(f"Bild {idx} gespeichert: '{dest.as_posix()}'")
-            st.image(dest.as_posix(), caption=f"Generiertes Bild {idx}", use_column_width=True)
-        except requests.HTTPError as http_err:
-            st.error(f"HTTP-Fehler beim Herunterladen von Bild {idx}: {http_err}")
-        except Exception as e:
-            logger.exception("Download fehlgeschlagen")
-            st.error(f"Fehler beim Speichern von Bild {idx}: {e}")
-
-
-def save_bytes_as_image_show(data: bytes, prefix: str = "upscaled", ext: str = ".png") -> None:
-    ensure_save_dir(SAVE_DIR)
-    try:
-        img = Image.open(BytesIO(data))
-        buf = image_to_png_buffer(img)
-        filename = safe_unique_filename(".png", prefix=prefix)
-        dest = SAVE_DIR / filename
-        with dest.open("wb") as f:
-            f.write(buf.getbuffer())
-        st.success(f"Bild gespeichert: '{dest.as_posix()}'")
-        st.image(dest.as_posix(), caption="Ergebnis", use_column_width=True)
-    except Exception:
-        filename = safe_unique_filename(ext, prefix=prefix)
-        dest = SAVE_DIR / filename
-        with dest.open("wb") as f:
-            f.write(data)
-        st.success(f"Datei gespeichert: '{dest.as_posix()}'")
-        st.image(dest.as_posix(), caption="Ergebnis", use_column_width=True)
-
-
 # ==========
 # Seiten-UI
 # ==========
@@ -573,9 +485,9 @@ def render_generator(client: replicate.Client) -> None:
                 urls = [str(u) for u in output]
                 if urls:
                     desired_ext = str(inputs.get("output_format", "jpg"))
-                    save_and_show_images(urls, desired_ext)
+                    save_and_show_images(urls, desired_ext, SAVE_DIR)
             elif isinstance(output, str):
-                save_and_show_images([output], str(inputs.get("output_format", "jpg")))
+                save_and_show_images([output], str(inputs.get("output_format", "jpg")), SAVE_DIR)
             else:
                 st.error("Unerwartetes Ausgabeformat der Replicate API für den Generator.")
 
@@ -639,26 +551,26 @@ def render_upscaler(client: replicate.Client) -> None:
                 read_fn = getattr(output, "read", None)
                 if callable(read_fn):
                     data: bytes = read_fn()
-                    save_bytes_as_image_show(data, prefix="upscaled", ext=".png")
+                    save_bytes_as_image_show(data, SAVE_DIR, prefix="upscaled", ext=".png")
                     return
                 if isinstance(output, str):
-                    save_and_show_images([output], "png")
+                    save_and_show_images([output], "png", SAVE_DIR)
                     return
                 if isinstance(output, list) and output:
                     first = output[0]
                     if isinstance(first, str):
-                        save_and_show_images([first], "png")
+                        save_and_show_images([first], "png", SAVE_DIR)
                         return
                     read_fn0 = getattr(first, "read", None)
                     if callable(read_fn0):
                         data0: bytes = read_fn0()
-                        save_bytes_as_image_show(data0, prefix="upscaled", ext=".png")
+                        save_bytes_as_image_show(data0, SAVE_DIR, prefix="upscaled", ext=".png")
                         return
                 url_fn = getattr(output, "url", None)
                 if callable(url_fn):
                     url_val = url_fn()
                     if isinstance(url_val, str):
-                        save_and_show_images([url_val], "png")
+                        save_and_show_images([url_val], "png", SAVE_DIR)
                         return
                 st.error("Unerwartetes Ausgabeformat der Replicate API für den Upscaler.")
             except Exception as e:
