@@ -4,7 +4,7 @@ Streamlit Bildgenerator, Upscaler & Galerie (Replicate + Auth)
 --------------------------------------------------------------
 - Sichere Konfiguration (YAML oder st.secrets), robustes Login via streamlit_authenticator
 - Zwei Bildgenerator-Profile (Flux Dev, Flux 1.1 Pro) + Upscaler (google/upscaler)
- - Erst-Login-Flow: flux/flux + erzwungene Änderung von Benutzername und Passwort (YAML-Variante)
+ - Erst-Login-Flow: admin/admin + erzwungene Änderung von Benutzername und Passwort (YAML-Variante)
 - Optionaler Bild-Upload oder Auswahl aus Galerie (für Upscaler)
 - Zuverlässiges Speichern, Anzeigen, Downloaden & Löschen
 - Sauberes Logging, PEP8, Typ-Hints & Docstrings
@@ -26,6 +26,7 @@ import replicate
 import requests
 import streamlit as st
 import streamlit_authenticator as stauth
+import toml
 import yaml
 from PIL import Image
 from yaml.loader import SafeLoader
@@ -118,7 +119,7 @@ def hash_password(password: str) -> str:
 
 
 # ============================================
-# Erst-Login-Bootstrap: flux/flux + Pflicht
+# Erst-Login-Bootstrap: admin/admin + Pflicht
 # ============================================
 SECRETS_PATH = Path(".streamlit/secrets.toml")
 
@@ -131,8 +132,22 @@ def _load_secrets() -> Mapping[str, Any]:
         return {}
 
 
+def save_replicate_api_token(token: str) -> None:
+    """Persistiert den übergebenen Token in `.streamlit/secrets.toml`."""
+    data: Dict[str, Any] = {}
+    if SECRETS_PATH.exists():
+        try:
+            data = toml.load(SECRETS_PATH)
+        except Exception:
+            data = {}
+    data["replicate_api_token"] = token
+    SECRETS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with SECRETS_PATH.open("w", encoding="utf-8") as f:
+        toml.dump(data, f)
+
+
 def ensure_bootstrap_files() -> None:
-    """Erstellt fehlende `config.yaml`/`secrets.toml` und legt User `flux/flux` an."""
+    """Erstellt fehlende `config.yaml`/`secrets.toml` und legt User `admin/admin` an."""
     # secrets.toml anlegen, falls nicht vorhanden
     if not SECRETS_PATH.exists():
         SECRETS_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -161,11 +176,11 @@ def ensure_bootstrap_files() -> None:
     usernames = credentials.get("usernames") or {}
 
     default_added = False
-    if "flux" not in usernames:
-        hashed = hash_password("flux")
-        usernames["flux"] = {
-            "name": "Flux User",
-            "email": "flux@example.com",
+    if "admin" not in usernames:
+        hashed = hash_password("admin")
+        usernames["admin"] = {
+            "name": "Admin User",
+            "email": "admin@example.com",
             "password": hashed,
             "must_change_credentials": True,
         }
@@ -178,7 +193,7 @@ def ensure_bootstrap_files() -> None:
         _write_yaml(CONFIG_PATH, cfg)
         if default_added:
             logger.info(
-                "Bootstrap: flux/flux angelegt und must_change_credentials=True gesetzt."
+                "Bootstrap: admin/admin angelegt und must_change_credentials=True gesetzt."
             )
 
 
@@ -824,7 +839,6 @@ def main() -> None:
 
     # 2) Konfiguration laden
     cfg = load_config()
-    client = get_replicate_client(cfg.replicate_api_token)
 
     # 3) Auth
     name, username, auth_status, _auth = do_authentication(cfg)
@@ -835,7 +849,26 @@ def main() -> None:
     # 4) Erzwinge Wechsel der Standard-Zugangsdaten
     enforce_initial_credentials_change_ui(cfg, username or getattr(_auth, "username", None))
 
-    # 5) Menü
+    # 5) Replicate-Token sicherstellen
+    if not cfg.replicate_api_token:
+        st.markdown("## Replicate API Token erforderlich")
+        st.info("Bitte gib deinen REPLICATE_API_TOKEN ein, um die App nutzen zu können.")
+        token_val = st.text_input("REPLICATE_API_TOKEN", type="password")
+        if st.button("Speichern"):
+            if not token_val.strip():
+                st.error("Token darf nicht leer sein.")
+            else:
+                save_replicate_api_token(token_val.strip())
+                st.success("Token gespeichert. Seite wird neu geladen...")
+                try:
+                    st.rerun()
+                except Exception:
+                    st.experimental_rerun()  # type: ignore[attr-defined]
+        st.stop()
+
+    client = get_replicate_client(cfg.replicate_api_token)
+
+    # 6) Menü
     st.sidebar.markdown("## Menü")
     menu = st.sidebar.selectbox("Ansicht wählen", ["Bildgenerator", "Upscaler", "Galerie"], index=0)
 
