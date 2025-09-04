@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
 
 import replicate
 import requests
@@ -120,6 +120,14 @@ def hash_password(password: str) -> str:
 # ============================================
 # Erst-Login-Bootstrap: admin/admin + Pflicht
 # ============================================
+def _load_secrets() -> Mapping[str, Any]:
+    """Lädt st.secrets sicher, gibt {} bei fehlender Datei zurück."""
+    try:
+        return st.secrets  # type: ignore[return-value]
+    except FileNotFoundError:
+        return {}
+
+
 def ensure_admin_bootstrap_file() -> None:
     """
     Stellt sicher, dass es einen admin-User mit 'admin'-Passwort gibt,
@@ -129,7 +137,7 @@ def ensure_admin_bootstrap_file() -> None:
     Wenn st.secrets bereits Credentials liefert, macht diese Funktion nichts.
     """
     # Wenn mit st.secrets gearbeitet wird, kein YAML-Bootstrap durchführen
-    secrets = st.secrets or {}
+    secrets = _load_secrets()
     if "credentials" in secrets and "cookie" in secrets:
         return
 
@@ -214,7 +222,7 @@ def load_config() -> AppConfig:
       - replicate_api_token (optional; empfohlen via Umgebungsvariable ODER st.secrets)
     """
     # st.secrets bevorzugen
-    secrets = st.secrets or {}
+    secrets = _load_secrets()
     if "credentials" in secrets and "cookie" in secrets:
         cookie = secrets["cookie"]
         token = secrets.get("replicate_api_token") or os.getenv("REPLICATE_API_TOKEN")
@@ -739,8 +747,11 @@ def enforce_admin_password_change_ui(cfg: AppConfig, username: Optional[str]) ->
         must_change = admin_must_change_password_from_yaml()
     else:
         # Falls jemand in st.secrets ein Flag mitliefert, berücksichtigen:
+        secrets = _load_secrets()
         try:
-            must_change = bool(st.secrets["credentials"]["usernames"]["admin"].get("must_change_password", False))
+            must_change = bool(
+                secrets["credentials"]["usernames"]["admin"].get("must_change_password", False)
+            )
         except Exception:
             must_change = False
 
