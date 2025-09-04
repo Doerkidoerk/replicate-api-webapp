@@ -366,6 +366,9 @@ def do_authentication(cfg: AppConfig):
     # --- FEEDBACK ---
     if auth_status is False:
         st.sidebar.error("Benutzername oder Passwort ist falsch.")
+        # Session-Status zurücksetzen, um erneute Eingabe zu ermöglichen
+        st.session_state["authentication_status"] = None
+        st.session_state.pop("username", None)
     elif auth_status is None:
         st.sidebar.info("Bitte geben Sie Ihren Benutzernamen und Ihr Passwort ein.")
 
@@ -809,7 +812,7 @@ def main() -> None:
     name, username, auth_status, _auth = do_authentication(cfg)
     if not auth_status:
         st.write("Bitte einloggen, um auf den Inhalt zuzugreifen.")
-        return
+        st.stop()
 
     # 4) Erzwinge Passwortwechsel für admin, falls markiert
     enforce_admin_password_change_ui(cfg, username or getattr(_auth, "username", None))
