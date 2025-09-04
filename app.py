@@ -124,10 +124,29 @@ def hash_password(password: str) -> str:
 # Erst-Login-Bootstrap
 # ============================================
 def _load_secrets() -> Mapping[str, Any]:
+    """Load secrets by merging Streamlit's secrets with the local file.
+
+    Streamlit does not automatically reload ``st.secrets`` after writing to
+    ``secrets.toml``. To pick up a newly saved token without restarting the
+    server, we read the file directly and merge it on top of ``st.secrets``.
+    """
+
+    merged: Dict[str, Any] = {}
+
+    # Start with what's already available in st.secrets (if any)
     try:
-        return st.secrets  # type: ignore[return-value]
-    except FileNotFoundError:
-        return {}
+        merged.update(dict(st.secrets))  # type: ignore[arg-type]
+    except Exception:
+        pass
+
+    # Overlay anything from the secrets file so recent saves take effect
+    if SECRETS_PATH.exists():
+        try:
+            merged.update(toml.load(SECRETS_PATH))
+        except Exception:
+            pass
+
+    return merged
 
 
 def save_replicate_api_token(token: str) -> None:
