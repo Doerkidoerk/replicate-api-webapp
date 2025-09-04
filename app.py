@@ -4,7 +4,7 @@ Streamlit Bildgenerator, Upscaler & Galerie (Replicate + Auth)
 --------------------------------------------------------------
 - Sichere Konfiguration (YAML oder st.secrets), robustes Login via streamlit_authenticator
 - Zwei Bildgenerator-Profile (Flux Dev, Flux 1.1 Pro) + Upscaler (google/upscaler)
-- Erst-Login-Flow: admin/admin + erzwungener Passwortwechsel (YAML-Variante)
+ - Erst-Login-Flow: flux/flux + erzwungene Änderung von Benutzername und Passwort (YAML-Variante)
 - Optionaler Bild-Upload oder Auswahl aus Galerie (für Upscaler)
 - Zuverlässiges Speichern, Anzeigen, Downloaden & Löschen
 - Sauberes Logging, PEP8, Typ-Hints & Docstrings
@@ -118,8 +118,11 @@ def hash_password(password: str) -> str:
 
 
 # ============================================
-# Erst-Login-Bootstrap: admin/admin + Pflicht
+# Erst-Login-Bootstrap: flux/flux + Pflicht
 # ============================================
+SECRETS_PATH = Path(".streamlit/secrets.toml")
+
+
 def _load_secrets() -> Mapping[str, Any]:
     """Lädt st.secrets sicher, gibt {} bei fehlender Datei zurück."""
     try:
@@ -128,14 +131,13 @@ def _load_secrets() -> Mapping[str, Any]:
         return {}
 
 
-def ensure_admin_bootstrap_file() -> None:
-    """
-    Stellt sicher, dass es einen admin-User mit 'admin'-Passwort gibt,
-    falls noch keiner existiert. Setzt must_change_password=True.
-    Erzeugt bei Bedarf eine Minimal-Konfiguration.
-    Wirkt nur auf die YAML-Konfiguration (nicht auf st.secrets).
-    Wenn st.secrets bereits Credentials liefert, macht diese Funktion nichts.
-    """
+def ensure_bootstrap_files() -> None:
+    """Erstellt fehlende `config.yaml`/`secrets.toml` und legt User `flux/flux` an."""
+    # secrets.toml anlegen, falls nicht vorhanden
+    if not SECRETS_PATH.exists():
+        SECRETS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        SECRETS_PATH.write_text("# hier können Secrets eingetragen werden\n", encoding="utf-8")
+
     # Wenn mit st.secrets gearbeitet wird, kein YAML-Bootstrap durchführen
     secrets = _load_secrets()
     if "credentials" in secrets and "cookie" in secrets:
@@ -158,54 +160,59 @@ def ensure_admin_bootstrap_file() -> None:
     credentials = cfg.get("credentials") or {}
     usernames = credentials.get("usernames") or {}
 
-    admin_added = False
-    if "admin" not in usernames:
-        # neuen admin erstellen
-        hashed = hash_password("admin")
-        usernames["admin"] = {
-            "name": "Administrator",
-            "email": "admin@example.com",
+    default_added = False
+    if "flux" not in usernames:
+        hashed = hash_password("flux")
+        usernames["flux"] = {
+            "name": "Flux User",
+            "email": "flux@example.com",
             "password": hashed,
-            "must_change_password": True,
+            "must_change_credentials": True,
         }
         credentials["usernames"] = usernames
         cfg["credentials"] = credentials
         changed = True
-        admin_added = True
+        default_added = True
 
     if changed:
         _write_yaml(CONFIG_PATH, cfg)
-        if admin_added:
+        if default_added:
             logger.info(
-                "Bootstrap: admin/admin angelegt und must_change_password=True gesetzt."
+                "Bootstrap: flux/flux angelegt und must_change_credentials=True gesetzt."
             )
 
 
-def admin_must_change_password_from_yaml() -> bool:
-    """Liest aus YAML, ob admin ein Passwort-Change erzwingen soll."""
+def must_change_credentials_from_yaml(username: str) -> bool:
+    """Prüft, ob für den Benutzer ein Credential-Change erzwungen wird."""
     if not CONFIG_PATH.exists():
         return False
     cfg = _read_yaml(CONFIG_PATH)
     try:
-        return bool(cfg["credentials"]["usernames"]["admin"].get("must_change_password", False))
+        return bool(
+            cfg["credentials"]["usernames"][username].get("must_change_credentials", False)
+        )
     except Exception:
         return False
 
 
-def set_admin_password_in_yaml(new_password: str) -> None:
-    """Setzt das admin-Passwort (gehasht) in YAML und entfernt must_change_password."""
+def set_user_credentials_in_yaml(
+    old_username: str, new_username: str, new_password: str
+) -> None:
+    """Aktualisiert Benutzername & Passwort in YAML und entfernt Pflicht-Flag."""
     cfg = _read_yaml(CONFIG_PATH)
     if "credentials" not in cfg:
         st.error("Ungültige YAML-Struktur: 'credentials' fehlt.")
         st.stop()
-    if "usernames" not in cfg["credentials"]:
-        cfg["credentials"]["usernames"] = {}
-    if "admin" not in cfg["credentials"]["usernames"]:
-        cfg["credentials"]["usernames"]["admin"] = {"name": "Administrator", "email": "admin@example.com"}
+    usernames = cfg["credentials"].setdefault("usernames", {})
+    user = usernames.pop(old_username, None)
+    if not user:
+        st.error("Benutzer nicht gefunden.")
+        st.stop()
 
-    hashed = hash_password(new_password)
-    cfg["credentials"]["usernames"]["admin"]["password"] = hashed
-    cfg["credentials"]["usernames"]["admin"]["must_change_password"] = False
+    user["password"] = hash_password(new_password)
+    user["must_change_credentials"] = False
+    user["name"] = new_username
+    usernames[new_username] = user
     _write_yaml(CONFIG_PATH, cfg)
 
 
@@ -729,28 +736,26 @@ def render_gallery() -> None:
                     st.experimental_rerun()  # type: ignore[attr-defined]
 
 
-# ======================================
-# Zwingender Passwortwechsel für "admin"
-# ======================================
-def enforce_admin_password_change_ui(cfg: AppConfig, username: Optional[str]) -> None:
-    """
-    Erzwingt beim ersten Login (admin/admin) einen Passwortwechsel.
-    - YAML: automatisches Update & Flag-Entfernung
-    - st.secrets: zeigt Hash & YAML-Snippet zum manuellen Update
-    Stoppt die App-Ausführung, bis ein gültiges neues Passwort gesetzt/gespeichert ist.
-    """
-    if username != "admin":
+# ========================================
+# Zwingender Wechsel von Benutzer & Passwort
+# ========================================
+def enforce_initial_credentials_change_ui(
+    cfg: AppConfig, username: Optional[str]
+) -> None:
+    """Erzwingt beim ersten Login einen Wechsel von Benutzername und Passwort."""
+    if not username:
         return
 
     must_change = False
     if cfg.source == "yaml":
-        must_change = admin_must_change_password_from_yaml()
+        must_change = must_change_credentials_from_yaml(username)
     else:
-        # Falls jemand in st.secrets ein Flag mitliefert, berücksichtigen:
         secrets = _load_secrets()
         try:
             must_change = bool(
-                secrets["credentials"]["usernames"]["admin"].get("must_change_password", False)
+                secrets["credentials"]["usernames"][username].get(
+                    "must_change_credentials", False
+                )
             )
         except Exception:
             must_change = False
@@ -758,15 +763,18 @@ def enforce_admin_password_change_ui(cfg: AppConfig, username: Optional[str]) ->
     if not must_change:
         return
 
-    st.markdown("## 🔐 Passwortwechsel erforderlich (Administrator)")
-    st.info("Erster Login mit Standard-Zugangsdaten erkannt. Bitte lege jetzt ein **neues, sicheres Passwort** fest.")
+    st.markdown("## 🔐 Zugangsdaten aktualisieren")
+    st.info(
+        "Erster Login mit Standard-Zugangsdaten erkannt. Bitte wähle einen neuen Benutzername und ein neues Passwort."
+    )
 
+    new_user = st.text_input("Neuer Benutzername")
     new1 = st.text_input("Neues Passwort", type="password")
     new2 = st.text_input("Neues Passwort bestätigen", type="password")
     min_len = 8
-    if st.button("Passwort speichern"):
-        if not new1 or not new2:
-            st.error("Bitte beide Felder ausfüllen.")
+    if st.button("Speichern"):
+        if not new_user or not new1 or not new2:
+            st.error("Bitte alle Felder ausfüllen.")
         elif new1 != new2:
             st.error("Die Passwörter stimmen nicht überein.")
         elif len(new1) < min_len:
@@ -774,34 +782,33 @@ def enforce_admin_password_change_ui(cfg: AppConfig, username: Optional[str]) ->
         else:
             if cfg.source == "yaml":
                 try:
-                    set_admin_password_in_yaml(new1)
-                    st.success("Passwort gespeichert. Du kannst die App jetzt normal verwenden.")
+                    set_user_credentials_in_yaml(username, new_user, new1)
+                    st.success(
+                        "Zugangsdaten gespeichert. Bitte neu anmelden, um fortzufahren."
+                    )
                     st.balloons()
                     st.stop()
                 except Exception as e:
                     st.error(f"Fehler beim Schreiben in die YAML: {e}")
             else:
-                # secrets: Hash erzeugen & Snippet anzeigen
                 hashed = hash_password(new1)
                 st.warning(
-                    "Die App läuft aktuell mit `st.secrets`. "
-                    "Bitte aktualisiere deine Secrets manuell und starte neu."
+                    "Die App läuft aktuell mit `st.secrets`. Bitte aktualisiere deine Secrets manuell und starte neu."
                 )
                 st.code(
                     f"""# In deinen Secrets/YAML einfügen:
 credentials:
   usernames:
-    admin:
-      name: "Administrator"
-      email: "admin@example.com"
+    {new_user}:
+      name: "{new_user}"
+      email: "{new_user}@example.com"
       password: "{hashed}"
-      must_change_password: false
+      must_change_credentials: false
 """,
                     language="yaml",
                 )
                 st.stop()
 
-    # Bis zur Änderung wird die restliche App blockiert:
     st.stop()
 
 
@@ -812,8 +819,8 @@ def main() -> None:
     """Entry-point der Streamlit-App."""
     st.set_page_config(page_title=APP_TITLE, page_icon="🎨", layout="wide")
 
-    # 1) Admin-Bootstrap in YAML (falls Secrets nicht genutzt werden)
-    ensure_admin_bootstrap_file()
+    # 1) Bootstrap-Dateien & Default-User anlegen
+    ensure_bootstrap_files()
 
     # 2) Konfiguration laden
     cfg = load_config()
@@ -825,8 +832,8 @@ def main() -> None:
         st.write("Bitte einloggen, um auf den Inhalt zuzugreifen.")
         st.stop()
 
-    # 4) Erzwinge Passwortwechsel für admin, falls markiert
-    enforce_admin_password_change_ui(cfg, username or getattr(_auth, "username", None))
+    # 4) Erzwinge Wechsel der Standard-Zugangsdaten
+    enforce_initial_credentials_change_ui(cfg, username or getattr(_auth, "username", None))
 
     # 5) Menü
     st.sidebar.markdown("## Menü")
