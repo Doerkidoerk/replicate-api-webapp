@@ -1,12 +1,11 @@
 # app.py
 """
-Streamlit Bildgenerator, Upscaler & Galerie (Replicate + Auth)
---------------------------------------------------------------
-- Sichere Konfiguration (YAML oder st.secrets), robustes Login via streamlit_authenticator
-- Erst-Login-Flow: admin/admin mit erzwungenem Passwortwechsel (YAML-Variante)
-- Optionaler Bild-Upload oder Auswahl aus Galerie (für Upscaler)
-- Zuverlässiges Speichern, Anzeigen, Downloaden & Löschen
-- Sauberes Logging, PEP8, Typ-Hints & Docstrings
+Streamlit Bildgenerator, Upscaler & Galerie (Replicate + Auth, kompatibel zu streamlit-authenticator 0.4.x)
+-----------------------------------------------------------------------------------------------------------
+- Login nach 0.4.x-Pattern: authenticator.login() (ohne positionsbasierte Argumente) + Session-State
+- Erst-Login-Flow: admin/admin mit Pflicht zum Passwortwechsel (YAML-Variante)
+- Optionaler Bild-Upload / Galerie (Upscaler)
+- Robustes Speichern, Anzeigen, Downloaden & Löschen
 """
 
 from __future__ import annotations
@@ -18,7 +17,7 @@ import secrets as pysecrets
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
+from typing import Any, Dict, Mapping, Optional, Tuple, Union
 
 import replicate
 import streamlit as st
@@ -27,9 +26,10 @@ import toml
 import yaml
 from PIL import Image
 from yaml.loader import SafeLoader
+
+# eigene Hilfsfunktionen (ohne get_replicate_client importieren!)
 from replicate_api import (
     ensure_save_dir,
-    get_replicate_client,
     image_to_png_buffer,
     list_images,
     run_inference,
@@ -43,6 +43,7 @@ from replicate_api import (
 APP_TITLE = "Flux – Bildgenerator & Upscaler"
 SAVE_DIR = Path("./KI-Bilder")
 CONFIG_PATH = Path(".streamlit/config.yaml")
+SECRETS_PATH = Path(".streamlit/secrets.toml")
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
 
 # Modelle
@@ -52,8 +53,7 @@ MODELS: Dict[str, str] = {
 }
 UPSCALER_MODEL_ID = "google/upscaler"  # Replicate Upscaler
 
-# Standard-Account für den Erst-Login
-# Standard-Account für den Erst-Login
+# Standard-Account für Erst-Login
 DEFAULT_USERNAME = "admin"
 DEFAULT_PASSWORD = "admin"
 
@@ -72,12 +72,10 @@ logger = logging.getLogger("app")
 # =================
 @dataclass
 class AppConfig:
-    """Konfigurationscontainer für Auth & Co."""
     credentials: dict
     cookie_name: str
     cookie_key: str
     cookie_expiry_days: int
-    preauthorized: Optional[dict] = None
     replicate_api_token: Optional[str] = None
     source: str = "yaml"  # "yaml" oder "secrets"
 
@@ -99,43 +97,31 @@ def _write_yaml(path: Path, data: dict) -> None:
 
 
 # ============================================
-# Versionstolerantes Passwort-Hashing
+# Passwort-Hashing (0.4.x-tauglich)
 # ============================================
 def hash_password(password: str) -> str:
-    """
-    Versionstolerantes Hashing:
-    - bevorzugt streamlit_authenticator.Hasher (neue und alte API)
-    - Fallback auf bcrypt
-    """
     try:
-        # streamlit-authenticator >=0.4: classmethod `hash`
-        if hasattr(stauth.Hasher, "hash"):
-            return stauth.Hasher.hash(password)  # type: ignore[arg-type]
-        # Ältere Versionen: Instanziierung mit Liste und .generate()
-        return stauth.Hasher([password]).generate()[0]  # pragma: no cover - legacy path
+        if hasattr(stauth.Hasher, "hash"):  # 0.4.x
+            return stauth.Hasher.hash(password)
+        return stauth.Hasher([password]).generate()[0]  # legacy
     except Exception:
         try:
-            import bcrypt  # pip install bcrypt
+            import bcrypt
             salt = bcrypt.gensalt(rounds=12)
             return bcrypt.hashpw(password.encode("utf-8"), salt).decode("utf-8")
         except Exception as e:
             st.error(
-                "Passworthashing fehlgeschlagen. Bitte installiere entweder "
-                "`streamlit-authenticator` oder `bcrypt` (pip install bcrypt). "
-                f"Technisches Detail: {e}"
+                "Passworthashing fehlgeschlagen. Installiere `streamlit-authenticator` oder `bcrypt`."
+                f" Technisches Detail: {e}"
             )
             st.stop()
             raise
 
 
 # ============================================
-# Erst-Login-Bootstrap: flux/flux + Pflicht
+# Erst-Login-Bootstrap
 # ============================================
-SECRETS_PATH = Path(".streamlit/secrets.toml")
-
-
 def _load_secrets() -> Mapping[str, Any]:
-    """Lädt st.secrets sicher, gibt {} bei fehlender Datei zurück."""
     try:
         return st.secrets  # type: ignore[return-value]
     except FileNotFoundError:
@@ -143,7 +129,6 @@ def _load_secrets() -> Mapping[str, Any]:
 
 
 def save_replicate_api_token(token: str) -> None:
-    """Persistiert den übergebenen Token in `.streamlit/secrets.toml`."""
     data: Dict[str, Any] = {}
     if SECRETS_PATH.exists():
         try:
@@ -157,21 +142,14 @@ def save_replicate_api_token(token: str) -> None:
 
 
 def ensure_bootstrap_files() -> None:
-    """Erstellt fehlende `.streamlit`-Dateien und legt bei Bedarf `admin/admin` an."""
-    # secrets.toml anlegen, falls nicht vorhanden
     if not SECRETS_PATH.exists():
         SECRETS_PATH.parent.mkdir(parents=True, exist_ok=True)
         SECRETS_PATH.write_text("# hier können Secrets eingetragen werden\n", encoding="utf-8")
 
-    # Konfigurationsdatei existiert bereits -> nichts ändern
     if CONFIG_PATH.exists():
         return
 
-    # Standard-Admin anlegen
-    try:
-        hashed = stauth.Hasher([DEFAULT_PASSWORD]).generate()[0]
-    except TypeError:  # streamlit-authenticator >=0.4
-        hashed = stauth.Hasher.hash(DEFAULT_PASSWORD)
+    hashed = hash_password(DEFAULT_PASSWORD)
     cfg = {
         "cookie": {
             "name": "auth",
@@ -190,13 +168,10 @@ def ensure_bootstrap_files() -> None:
         },
     }
     _write_yaml(CONFIG_PATH, cfg)
-    logger.info(
-        "Bootstrap: admin/admin angelegt und must_change_credentials=True gesetzt."
-    )
+    logger.info("Bootstrap: admin/admin angelegt; must_change_credentials=True")
 
 
 def must_change_credentials_from_yaml(username: str) -> bool:
-    """Prüft, ob für den Benutzer ein Credential-Change erzwungen wird."""
     if not CONFIG_PATH.exists():
         return False
     cfg = _read_yaml(CONFIG_PATH)
@@ -209,7 +184,6 @@ def must_change_credentials_from_yaml(username: str) -> bool:
 
 
 def set_user_password_in_yaml(username: str, new_password: str) -> None:
-    """Aktualisiert das Passwort in YAML und entfernt Pflicht-Flag."""
     cfg = _read_yaml(CONFIG_PATH)
     if "credentials" not in cfg:
         st.error("Ungültige YAML-Struktur: 'credentials' fehlt.")
@@ -219,7 +193,6 @@ def set_user_password_in_yaml(username: str, new_password: str) -> None:
     if not user:
         st.error("Benutzer nicht gefunden.")
         st.stop()
-
     user["password"] = hash_password(new_password)
     user["must_change_credentials"] = False
     usernames[username] = user
@@ -230,15 +203,6 @@ def set_user_password_in_yaml(username: str, new_password: str) -> None:
 # Utilities
 # ===========
 def load_config() -> AppConfig:
-    """
-    Lädt die Konfiguration aus st.secrets (falls vorhanden) oder YAML.
-    Erwartete Felder:
-      - credentials
-      - cookie: { name, key, expiry_days }
-      - preauthorized (optional)
-      - replicate_api_token (optional; empfohlen via Umgebungsvariable ODER st.secrets)
-    """
-    # st.secrets bevorzugen
     secrets = _load_secrets()
     if "credentials" in secrets and "cookie" in secrets:
         cookie = secrets["cookie"]
@@ -248,12 +212,10 @@ def load_config() -> AppConfig:
             cookie_name=str(cookie.get("name", "app_auth")),
             cookie_key=str(cookie.get("key", "supersecret")),
             cookie_expiry_days=int(cookie.get("expiry_days", 30)),
-            preauthorized=secrets.get("preauthorized"),
             replicate_api_token=token,
             source="secrets",
         )
 
-    # Fallback: YAML-Datei
     if not CONFIG_PATH.exists():
         st.error(f"Konfigurationsdatei '{CONFIG_PATH.as_posix()}' nicht gefunden.")
         st.stop()
@@ -273,7 +235,6 @@ def load_config() -> AppConfig:
             cookie_name=cookie_cfg["name"],
             cookie_key=cookie_cfg["key"],
             cookie_expiry_days=int(cookie_cfg["expiry_days"]),
-            preauthorized=cfg.get("preauthorized"),
             replicate_api_token=token,
             source="yaml",
         )
@@ -285,49 +246,50 @@ def load_config() -> AppConfig:
 
 @st.cache_resource(show_spinner=False)
 def get_replicate_client(api_token: Optional[str]) -> replicate.Client:
-    """
-    Initialisiert einen Replicate-Client. Token-Priorität:
-    - Explizit übergebenes Token (st.secrets/config)
-    - Umgebungsvariable REPLICATE_API_TOKEN
-    """
     token = api_token or os.getenv("REPLICATE_API_TOKEN")
     if not token:
         st.error(
-            "Fehlendes Replicate-API-Token. "
-            "Bitte 'REPLICATE_API_TOKEN' in der Umgebung oder 'replicate_api_token' in st.secrets/config setzen."
+            "Fehlendes Replicate-API-Token. Setze 'REPLICATE_API_TOKEN' in der Umgebung "
+            "oder 'replicate_api_token' in st.secrets/config."
         )
         st.stop()
     return replicate.Client(api_token=token)
 
 
 def guess_mime(filename: str) -> str:
-    """Bestimme den MIME-Type eines Dateinamens."""
     mt, _ = mimetypes.guess_type(filename)
     return mt or "application/octet-stream"
 
 
 # =====================
-# Authentifizierung UI
+# Authentifizierung (0.4.x-konformes Pattern)
 # =====================
-def do_authentication(cfg: AppConfig):
+def do_authentication(cfg: AppConfig) -> Tuple[Optional[str], Optional[str], Optional[bool], Any]:
     """
-    Führt den Login durch und gibt (name, username, authentication_status, authenticator) zurück.
+    Gemäß 0.4.x-Doku:
+      - login() ohne positionsbasierte Argumente (Standard location='main')
+      - Status/Name/Username aus st.session_state lesen
+      - logout() per Keywords
+    Referenz: README & API-Doku.   [oai_citation:4‡GitHub](https://github.com/mkhorasani/Streamlit-Authenticator) [oai_citation:5‡streamlit-authenticator.readthedocs.io](https://streamlit-authenticator.readthedocs.io/?utm_source=chatgpt.com)
     """
     authenticator = stauth.Authenticate(
         credentials=cfg.credentials,
         cookie_name=cfg.cookie_name,
-        key=cfg.cookie_key,
+        cookie_key=cfg.cookie_key,
         cookie_expiry_days=cfg.cookie_expiry_days,
-        preauthorized=cfg.preauthorized,
     )
 
+    # Login-Widget rendern (Standard: main). KEIN Titel als 1. Argument!
     try:
-        name, authentication_status, username = authenticator.login(
-            location="sidebar", fields={"Form name": "Login"}
-        )
-    except (ValueError, TypeError) as e:
-        st.error(f"Login-Fehler: {e}")
+        authenticator.login()  # location='main' (Default)
+    except Exception as e:
+        # Falls hier ein Fehler auftritt, ist fast immer noch irgendwo ein alter Aufruf im Projekt.
+        st.error(f"Login fehlgeschlagen: {e}")
         return None, None, None, authenticator
+
+    name = st.session_state.get("name")
+    username = st.session_state.get("username")
+    authentication_status = st.session_state.get("authentication_status")
 
     if authentication_status is False:
         st.error("Benutzername oder Passwort ist falsch.")
@@ -335,10 +297,11 @@ def do_authentication(cfg: AppConfig):
         st.session_state.pop("username", None)
         st.session_state.pop("name", None)
     elif authentication_status is None:
-        st.info("Bitte geben Sie Ihren Benutzernamen und Ihr Passwort ein.")
+        st.info("Bitte Benutzernamen und Passwort eingeben.")
 
     if authentication_status:
-        authenticator.logout("Logout", location="sidebar")
+        # Logout-Button in der Sidebar
+        authenticator.logout(button_name="Logout", location="sidebar", key="Logout")
         st.sidebar.success(f"Willkommen, {name or username}!")
 
     return name, username, authentication_status, authenticator
@@ -631,10 +594,7 @@ def render_gallery() -> None:
 # ========================================
 # Zwingender Wechsel von Benutzer & Passwort
 # ========================================
-def enforce_initial_credentials_change_ui(
-    cfg: AppConfig, username: Optional[str]
-) -> None:
-    """Erzwingt beim ersten Login einen Passwortwechsel."""
+def enforce_initial_credentials_change_ui(cfg: AppConfig, username: Optional[str]) -> None:
     if not username:
         return
 
@@ -656,9 +616,7 @@ def enforce_initial_credentials_change_ui(
         return
 
     st.markdown("## 🔐 Passwort ändern")
-    st.warning(
-        "Erster Login mit Standard-Passwort erkannt. Bitte wähle ein neues Passwort."
-    )
+    st.warning("Erster Login mit Standard-Passwort erkannt. Bitte neues Passwort setzen.")
 
     new1 = st.text_input("Neues Passwort", type="password")
     new2 = st.text_input("Neues Passwort bestätigen", type="password")
@@ -674,18 +632,14 @@ def enforce_initial_credentials_change_ui(
             if cfg.source == "yaml":
                 try:
                     set_user_password_in_yaml(username, new1)
-                    st.success(
-                        "Passwort gespeichert. Bitte neu anmelden, um fortzufahren."
-                    )
+                    st.success("Passwort gespeichert. Bitte neu anmelden.")
                     st.balloons()
                     st.stop()
                 except Exception as e:
                     st.error(f"Fehler beim Schreiben in die YAML: {e}")
             else:
                 hashed = hash_password(new1)
-                st.warning(
-                    "Die App läuft aktuell mit `st.secrets`. Bitte aktualisiere deine Secrets manuell und starte neu."
-                )
+                st.warning("Aktuell laufen die Logins über `st.secrets`. Bitte manuell aktualisieren & neu starten.")
                 st.code(
                     f"""# In deinen Secrets/YAML einfügen:
 credentials:
@@ -707,32 +661,23 @@ credentials:
 # Main
 # =====
 def main() -> None:
-    """Entry-point der Streamlit-App."""
     st.set_page_config(page_title=APP_TITLE, page_icon="🎨", layout="wide")
 
-    # 1) Version loggen
-    logger.info(
-        "streamlit-authenticator version: %s", getattr(stauth, "__version__", "unknown")
-    )
+    logger.info("streamlit-authenticator version: %s", getattr(stauth, "__version__", "unknown"))
 
-    # 2) Bootstrap-Dateien & Default-User anlegen
     ensure_bootstrap_files()
-
-    # 3) Konfiguration laden
     cfg = load_config()
 
-    # 4) Auth
+    # Auth
     name, username, authentication_status, authenticator = do_authentication(cfg)
     if not authentication_status:
         st.write("Bitte einloggen, um auf den Inhalt zuzugreifen.")
         st.stop()
 
-    # 5) Erzwinge Wechsel des Standard-Passworts
-    enforce_initial_credentials_change_ui(
-        cfg, username or getattr(authenticator, "username", None)
-    )
+    # Passwortwechsel erzwingen (nur YAML-Variante automatisiert)
+    enforce_initial_credentials_change_ui(cfg, username or st.session_state.get("username"))
 
-    # 6) Replicate-Token sicherstellen
+    # Replicate-Token sicherstellen
     if not cfg.replicate_api_token:
         st.markdown("## Replicate API Token erforderlich")
         st.info("Bitte gib deinen REPLICATE_API_TOKEN ein, um die App nutzen zu können.")
@@ -751,7 +696,7 @@ def main() -> None:
 
     client = get_replicate_client(cfg.replicate_api_token)
 
-    # 7) Menü
+    # Menü
     st.sidebar.markdown("## Menü")
     menu = st.sidebar.selectbox("Ansicht wählen", ["Bildgenerator", "Upscaler", "Galerie"], index=0)
 
