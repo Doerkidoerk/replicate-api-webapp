@@ -42,7 +42,29 @@ from replicate_api import (
 # =========================
 APP_TITLE = "Flux – Bildgenerator & Upscaler"
 # Basispfad der App (unabhängig vom aktuellen Arbeitsverzeichnis)
-BASE_DIR = Path(__file__).resolve().parent
+def _determine_base_dir() -> Path:
+    """Bestimme das Verzeichnis der originalen Streamlit-App.
+
+    Bei `streamlit run` kopiert Streamlit die Datei in ein temporäres Verzeichnis,
+    sodass `__file__` sonst auf diesen Zwischenspeicher zeigen würde. Wenn möglich
+    verwenden wir daher den Pfad der Haupt-Skriptdatei aus dem Streamlit-Kontext.
+    Falls kein Kontext verfügbar ist (z.B. beim Kompilieren), wird auf `__file__`
+    zurückgegriffen.
+    """
+
+    try:  # Streamlit >=1.25
+        from streamlit.runtime.scriptrunner import get_script_run_ctx  # type: ignore
+
+        ctx = get_script_run_ctx()
+        if ctx and ctx.main_script_path:
+            return Path(ctx.main_script_path).resolve().parent
+    except Exception:
+        pass
+
+    return Path(__file__).resolve().parent
+
+
+BASE_DIR = _determine_base_dir()
 SAVE_DIR = BASE_DIR / "KI-Bilder"
 CONFIG_PATH = BASE_DIR / ".streamlit" / "config.yaml"
 SECRETS_PATH = BASE_DIR / ".streamlit" / "secrets.toml"
