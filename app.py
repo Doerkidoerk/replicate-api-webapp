@@ -225,9 +225,11 @@ def set_user_password_in_yaml(username: str, new_password: str) -> None:
 # ===========
 def load_config() -> AppConfig:
     secrets = _load_secrets()
+
+    token = secrets.get("replicate_api_token") or os.getenv("REPLICATE_API_TOKEN")
+
     if "credentials" in secrets and "cookie" in secrets:
         cookie = secrets["cookie"]
-        token = secrets.get("replicate_api_token") or os.getenv("REPLICATE_API_TOKEN")
         return AppConfig(
             credentials=dict(secrets["credentials"]),
             cookie_name=str(cookie.get("name", "app_auth")),
@@ -250,7 +252,8 @@ def load_config() -> AppConfig:
 
     try:
         cookie_cfg = cfg["cookie"]
-        token = cfg.get("replicate_api_token") or os.getenv("REPLICATE_API_TOKEN")
+        if not token:
+            token = cfg.get("replicate_api_token")
         return AppConfig(
             credentials=cfg["credentials"],
             cookie_name=cookie_cfg["name"],
