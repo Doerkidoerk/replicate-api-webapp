@@ -371,8 +371,10 @@ def do_authentication(cfg: AppConfig):
     )
 
     try:
-        name, auth_status, username = authenticator.login(location="main")
+        # streamlit-authenticator >=0.4 nutzt einen positionsbasierten "location"-Parameter
+        name, auth_status, username = authenticator.login("main")
     except TypeError:
+        # Ältere Versionen erwarten (form_name, location)
         name, auth_status, username = authenticator.login("Login", "main")
     except Exception as e:
         st.error(f"Login-Fehler: {e}")
@@ -388,7 +390,7 @@ def do_authentication(cfg: AppConfig):
 
     if auth_status:
         try:
-            authenticator.logout(location="sidebar")
+            authenticator.logout("sidebar")
         except TypeError:
             authenticator.logout("Logout", "sidebar")
         st.sidebar.success(f"Willkommen, {name or username}!")
