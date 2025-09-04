@@ -93,11 +93,15 @@ def _write_yaml(path: Path, data: dict) -> None:
 def hash_password(password: str) -> str:
     """
     Versionstolerantes Hashing:
-    - bevorzugt streamlit_authenticator.Hasher
+    - bevorzugt streamlit_authenticator.Hasher (neue und alte API)
     - Fallback auf bcrypt
     """
     try:
-        return stauth.Hasher([password]).generate()[0]
+        # streamlit-authenticator >=0.4: classmethod `hash`
+        if hasattr(stauth.Hasher, "hash"):
+            return stauth.Hasher.hash(password)  # type: ignore[arg-type]
+        # Ältere Versionen: Instanziierung mit Liste und .generate()
+        return stauth.Hasher([password]).generate()[0]  # pragma: no cover - legacy path
     except Exception:
         try:
             import bcrypt  # pip install bcrypt
@@ -106,7 +110,7 @@ def hash_password(password: str) -> str:
         except Exception as e:
             st.error(
                 "Passworthashing fehlgeschlagen. Bitte installiere entweder "
-                "`streamlit-authenticator>=0.4` oder `bcrypt` (pip install bcrypt). "
+                "`streamlit-authenticator` oder `bcrypt` (pip install bcrypt). "
                 f"Technisches Detail: {e}"
             )
             st.stop()
