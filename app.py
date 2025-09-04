@@ -321,13 +321,24 @@ def do_authentication(cfg: AppConfig):
         preauthorized=cfg.preauthorized,
     )
 
-    try:
-        name, authentication_status, username = authenticator.login(
-            location="sidebar", fields={"Form name": "Login"}
+    def _login(selected_location: str):
+        """Helper to call the authenticator with a given location."""
+        return authenticator.login(
+            location=selected_location, fields={"Form name": "Login"}
         )
+
+    try:
+        name, authentication_status, username = _login("sidebar")
     except (ValueError, TypeError) as e:
-        st.error(f"Login-Fehler: {e}")
-        return None, None, None, authenticator
+        # Einige Versionen von ``streamlit-authenticator`` unterstützen den
+        # Sidebar nicht. In diesem Fall weichen wir auf die Hauptspalte aus,
+        # damit sich Nutzer überhaupt einloggen können.
+        logger.warning("Login in sidebar fehlgeschlagen: %s", e)
+        try:
+            name, authentication_status, username = _login("main")
+        except (ValueError, TypeError) as e_main:
+            st.error(f"Login-Fehler: {e_main}")
+            return None, None, None, authenticator
 
     if authentication_status is False:
         st.error("Benutzername oder Passwort ist falsch.")
