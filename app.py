@@ -3,8 +3,7 @@
 Streamlit Bildgenerator, Upscaler & Galerie (Replicate + Auth)
 --------------------------------------------------------------
 - Sichere Konfiguration (YAML oder st.secrets), robustes Login via streamlit_authenticator
-- Zwei Bildgenerator-Profile (Flux Dev, Flux 1.1 Pro) + Upscaler (google/upscaler)
- - Erst-Login-Flow: admin/admin + erzwungene Änderung von Benutzername und Passwort (YAML-Variante)
+- Erst-Login-Flow: flux/flux + erzwungene Änderung von Benutzername und Passwort (YAML-Variante)
 - Optionaler Bild-Upload oder Auswahl aus Galerie (für Upscaler)
 - Zuverlässiges Speichern, Anzeigen, Downloaden & Löschen
 - Sauberes Logging, PEP8, Typ-Hints & Docstrings
@@ -46,6 +45,10 @@ MODELS: Dict[str, str] = {
     "Flux 1.1 Pro": "black-forest-labs/flux-1.1-pro",
 }
 UPSCALER_MODEL_ID = "google/upscaler"  # Replicate Upscaler
+
+# Standard-Account für den Erst-Login
+DEFAULT_USERNAME = "flux"
+DEFAULT_PASSWORD = "flux"
 
 # ==============
 # Logging-Setup
@@ -119,7 +122,7 @@ def hash_password(password: str) -> str:
 
 
 # ============================================
-# Erst-Login-Bootstrap: admin/admin + Pflicht
+# Erst-Login-Bootstrap: flux/flux + Pflicht
 # ============================================
 SECRETS_PATH = Path(".streamlit/secrets.toml")
 
@@ -147,7 +150,7 @@ def save_replicate_api_token(token: str) -> None:
 
 
 def ensure_bootstrap_files() -> None:
-    """Erstellt fehlende `config.yaml`/`secrets.toml` und legt User `admin/admin` an."""
+    """Erstellt fehlende `config.yaml`/`secrets.toml` und legt User `flux/flux` an."""
     # secrets.toml anlegen, falls nicht vorhanden
     if not SECRETS_PATH.exists():
         SECRETS_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -176,11 +179,11 @@ def ensure_bootstrap_files() -> None:
     usernames = credentials.get("usernames") or {}
 
     default_added = False
-    if "admin" not in usernames:
-        hashed = hash_password("admin")
-        usernames["admin"] = {
-            "name": "Admin User",
-            "email": "admin@example.com",
+    if DEFAULT_USERNAME not in usernames:
+        hashed = hash_password(DEFAULT_PASSWORD)
+        usernames[DEFAULT_USERNAME] = {
+            "name": "Flux User",
+            "email": f"{DEFAULT_USERNAME}@example.com",
             "password": hashed,
             "must_change_credentials": True,
         }
@@ -193,7 +196,7 @@ def ensure_bootstrap_files() -> None:
         _write_yaml(CONFIG_PATH, cfg)
         if default_added:
             logger.info(
-                "Bootstrap: admin/admin angelegt und must_change_credentials=True gesetzt."
+                "Bootstrap: flux/flux angelegt und must_change_credentials=True gesetzt."
             )
 
 
@@ -367,42 +370,22 @@ def do_authentication(cfg: AppConfig):
         preauthorized=cfg.preauthorized,
     )
 
-    name = username = None
-    auth_status = None
-
-    # --- LOGIN ---
     try:
-        # Neuere Versionen: login(location="main") -> (name, auth_status, username)
-        result = authenticator.login(location="main")
-        if isinstance(result, tuple) and len(result) == 3:
-            name, auth_status, username = result
-        else:
-            auth_status = result
-            username = getattr(authenticator, "username", None)
-            name = getattr(authenticator, "name", username)
+        name, auth_status, username = authenticator.login(location="main")
     except TypeError:
-        # Ältere Versionen: login("Login", "main") -> (name, auth_status, username)
-        result = authenticator.login("Login", "main")
-        if isinstance(result, tuple) and len(result) == 3:
-            name, auth_status, username = result
-        else:
-            auth_status = result
-            username = getattr(authenticator, "username", None)
-            name = getattr(authenticator, "name", username)
+        name, auth_status, username = authenticator.login("Login", "main")
     except Exception as e:
         st.error(f"Login-Fehler: {e}")
         return None, None, None, authenticator
 
-    # --- FEEDBACK ---
     if auth_status is False:
         st.error("Benutzername oder Passwort ist falsch.")
-        # Session-Status zurücksetzen, um erneute Eingabe zu ermöglichen
         st.session_state["authentication_status"] = None
         st.session_state.pop("username", None)
+        st.session_state.pop("name", None)
     elif auth_status is None:
         st.info("Bitte geben Sie Ihren Benutzernamen und Ihr Passwort ein.")
 
-    # --- LOGOUT ---
     if auth_status:
         try:
             authenticator.logout(location="sidebar")

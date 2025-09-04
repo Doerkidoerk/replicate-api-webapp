@@ -10,3 +10,4 @@ dependencies:
     - replicate
     - requests
     - toml
+    - streamlit-authenticator
