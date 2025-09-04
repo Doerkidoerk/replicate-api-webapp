@@ -342,8 +342,8 @@ def do_authentication(cfg: AppConfig):
 
     # --- LOGIN ---
     try:
-        # Neuere Versionen: login(location="sidebar") -> (name, auth_status, username)
-        result = authenticator.login(location="sidebar")
+        # Neuere Versionen: login(location="main") -> (name, auth_status, username)
+        result = authenticator.login(location="main")
         if isinstance(result, tuple) and len(result) == 3:
             name, auth_status, username = result
         else:
@@ -351,8 +351,8 @@ def do_authentication(cfg: AppConfig):
             username = getattr(authenticator, "username", None)
             name = getattr(authenticator, "name", username)
     except TypeError:
-        # Ältere Versionen: login("Login", "sidebar") -> (name, auth_status, username)
-        result = authenticator.login("Login", "sidebar")
+        # Ältere Versionen: login("Login", "main") -> (name, auth_status, username)
+        result = authenticator.login("Login", "main")
         if isinstance(result, tuple) and len(result) == 3:
             name, auth_status, username = result
         else:
@@ -360,17 +360,17 @@ def do_authentication(cfg: AppConfig):
             username = getattr(authenticator, "username", None)
             name = getattr(authenticator, "name", username)
     except Exception as e:
-        st.sidebar.error(f"Login-Fehler: {e}")
+        st.error(f"Login-Fehler: {e}")
         return None, None, None, authenticator
 
     # --- FEEDBACK ---
     if auth_status is False:
-        st.sidebar.error("Benutzername oder Passwort ist falsch.")
+        st.error("Benutzername oder Passwort ist falsch.")
         # Session-Status zurücksetzen, um erneute Eingabe zu ermöglichen
         st.session_state["authentication_status"] = None
         st.session_state.pop("username", None)
     elif auth_status is None:
-        st.sidebar.info("Bitte geben Sie Ihren Benutzernamen und Ihr Passwort ein.")
+        st.info("Bitte geben Sie Ihren Benutzernamen und Ihr Passwort ein.")
 
     # --- LOGOUT ---
     if auth_status:
