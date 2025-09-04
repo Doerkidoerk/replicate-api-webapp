@@ -160,6 +160,10 @@ def save_replicate_api_token(token: str) -> None:
     SECRETS_PATH.parent.mkdir(parents=True, exist_ok=True)
     with SECRETS_PATH.open("w", encoding="utf-8") as f:
         toml.dump(data, f)
+        f.flush()
+        os.fsync(f.fileno())
+    # update env so current session can immediately use the token
+    os.environ["REPLICATE_API_TOKEN"] = token
 
 
 def ensure_bootstrap_files() -> None:
@@ -226,7 +230,11 @@ def set_user_password_in_yaml(username: str, new_password: str) -> None:
 def load_config() -> AppConfig:
     secrets = _load_secrets()
 
-    token = secrets.get("replicate_api_token") or os.getenv("REPLICATE_API_TOKEN")
+    token = (
+        st.session_state.get("replicate_api_token")
+        or secrets.get("replicate_api_token")
+        or os.getenv("REPLICATE_API_TOKEN")
+    )
 
     if "credentials" in secrets and "cookie" in secrets:
         cookie = secrets["cookie"]
@@ -707,16 +715,16 @@ def main() -> None:
         st.info("Bitte gib deinen REPLICATE_API_TOKEN ein, um die App nutzen zu können.")
         token_val = st.text_input("REPLICATE_API_TOKEN", type="password")
         if st.button("Speichern"):
-            if not token_val.strip():
+            token_val = token_val.strip()
+            if not token_val:
                 st.error("Token darf nicht leer sein.")
             else:
-                save_replicate_api_token(token_val.strip())
-                st.success("Token gespeichert. Seite wird neu geladen...")
-                try:
-                    st.rerun()
-                except Exception:
-                    st.experimental_rerun()  # type: ignore[attr-defined]
-        st.stop()
+                save_replicate_api_token(token_val)
+                st.session_state["replicate_api_token"] = token_val
+                cfg.replicate_api_token = token_val
+                st.success("Token gespeichert.")
+        if not st.session_state.get("replicate_api_token"):
+            st.stop()
 
     client = get_replicate_client(cfg.replicate_api_token)
 
