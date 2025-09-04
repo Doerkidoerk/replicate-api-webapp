@@ -135,6 +135,8 @@ def ensure_admin_bootstrap_file() -> None:
 
     cfg = _read_yaml(CONFIG_PATH)
 
+    changed = False
+
     cookie = cfg.get("cookie")
     if not cookie:
         cookie = {
@@ -143,10 +145,12 @@ def ensure_admin_bootstrap_file() -> None:
             "expiry_days": 30,
         }
         cfg["cookie"] = cookie
+        changed = True
 
     credentials = cfg.get("credentials") or {}
     usernames = credentials.get("usernames") or {}
 
+    admin_added = False
     if "admin" not in usernames:
         # neuen admin erstellen
         hashed = hash_password("admin")
@@ -158,8 +162,15 @@ def ensure_admin_bootstrap_file() -> None:
         }
         credentials["usernames"] = usernames
         cfg["credentials"] = credentials
+        changed = True
+        admin_added = True
+
+    if changed:
         _write_yaml(CONFIG_PATH, cfg)
-        logger.info("Bootstrap: admin/admin angelegt und must_change_password=True gesetzt.")
+        if admin_added:
+            logger.info(
+                "Bootstrap: admin/admin angelegt und must_change_password=True gesetzt."
+            )
 
 
 def admin_must_change_password_from_yaml() -> bool:
