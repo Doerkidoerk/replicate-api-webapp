@@ -41,9 +41,11 @@ from replicate_api import (
 # Konstante Pfade & Limits
 # =========================
 APP_TITLE = "Flux – Bildgenerator & Upscaler"
-SAVE_DIR = Path("./KI-Bilder")
-CONFIG_PATH = Path(".streamlit/config.yaml")
-SECRETS_PATH = Path(".streamlit/secrets.toml")
+# Basispfad der App (unabhängig vom aktuellen Arbeitsverzeichnis)
+BASE_DIR = Path(__file__).resolve().parent
+SAVE_DIR = BASE_DIR / "KI-Bilder"
+CONFIG_PATH = BASE_DIR / ".streamlit" / "config.yaml"
+SECRETS_PATH = BASE_DIR / ".streamlit" / "secrets.toml"
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
 
 # Modelle
