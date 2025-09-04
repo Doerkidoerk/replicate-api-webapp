@@ -41,9 +41,11 @@ from replicate_api import (
 # Konstante Pfade & Limits
 # =========================
 APP_TITLE = "Flux – Bildgenerator & Upscaler"
-SAVE_DIR = Path("./KI-Bilder")
-CONFIG_PATH = Path(".streamlit/config.yaml")
-SECRETS_PATH = Path(".streamlit/secrets.toml")
+# Basispfad der App (unabhängig vom aktuellen Arbeitsverzeichnis)
+BASE_DIR = Path(__file__).resolve().parent
+SAVE_DIR = BASE_DIR / "KI-Bilder"
+CONFIG_PATH = BASE_DIR / ".streamlit" / "config.yaml"
+SECRETS_PATH = BASE_DIR / ".streamlit" / "secrets.toml"
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
 
 # Modelle
@@ -122,10 +124,29 @@ def hash_password(password: str) -> str:
 # Erst-Login-Bootstrap
 # ============================================
 def _load_secrets() -> Mapping[str, Any]:
+    """Load secrets by merging Streamlit's secrets with the local file.
+
+    Streamlit does not automatically reload ``st.secrets`` after writing to
+    ``secrets.toml``. To pick up a newly saved token without restarting the
+    server, we read the file directly and merge it on top of ``st.secrets``.
+    """
+
+    merged: Dict[str, Any] = {}
+
+    # Start with what's already available in st.secrets (if any)
     try:
-        return st.secrets  # type: ignore[return-value]
-    except FileNotFoundError:
-        return {}
+        merged.update(dict(st.secrets))  # type: ignore[arg-type]
+    except Exception:
+        pass
+
+    # Overlay anything from the secrets file so recent saves take effect
+    if SECRETS_PATH.exists():
+        try:
+            merged.update(toml.load(SECRETS_PATH))
+        except Exception:
+            pass
+
+    return merged
 
 
 def save_replicate_api_token(token: str) -> None:
@@ -139,6 +160,10 @@ def save_replicate_api_token(token: str) -> None:
     SECRETS_PATH.parent.mkdir(parents=True, exist_ok=True)
     with SECRETS_PATH.open("w", encoding="utf-8") as f:
         toml.dump(data, f)
+        f.flush()
+        os.fsync(f.fileno())
+    # update env so current session can immediately use the token
+    os.environ["REPLICATE_API_TOKEN"] = token
 
 
 def ensure_bootstrap_files() -> None:
@@ -204,9 +229,15 @@ def set_user_password_in_yaml(username: str, new_password: str) -> None:
 # ===========
 def load_config() -> AppConfig:
     secrets = _load_secrets()
+
+    token = (
+        st.session_state.get("replicate_api_token")
+        or secrets.get("replicate_api_token")
+        or os.getenv("REPLICATE_API_TOKEN")
+    )
+
     if "credentials" in secrets and "cookie" in secrets:
         cookie = secrets["cookie"]
-        token = secrets.get("replicate_api_token") or os.getenv("REPLICATE_API_TOKEN")
         return AppConfig(
             credentials=dict(secrets["credentials"]),
             cookie_name=str(cookie.get("name", "app_auth")),
@@ -229,7 +260,8 @@ def load_config() -> AppConfig:
 
     try:
         cookie_cfg = cfg["cookie"]
-        token = cfg.get("replicate_api_token") or os.getenv("REPLICATE_API_TOKEN")
+        if not token:
+            token = cfg.get("replicate_api_token")
         return AppConfig(
             credentials=cfg["credentials"],
             cookie_name=cookie_cfg["name"],
@@ -683,16 +715,16 @@ def main() -> None:
         st.info("Bitte gib deinen REPLICATE_API_TOKEN ein, um die App nutzen zu können.")
         token_val = st.text_input("REPLICATE_API_TOKEN", type="password")
         if st.button("Speichern"):
-            if not token_val.strip():
+            token_val = token_val.strip()
+            if not token_val:
                 st.error("Token darf nicht leer sein.")
             else:
-                save_replicate_api_token(token_val.strip())
-                st.success("Token gespeichert. Seite wird neu geladen...")
-                try:
-                    st.rerun()
-                except Exception:
-                    st.experimental_rerun()  # type: ignore[attr-defined]
-        st.stop()
+                save_replicate_api_token(token_val)
+                st.session_state["replicate_api_token"] = token_val
+                cfg.replicate_api_token = token_val
+                st.success("Token gespeichert.")
+        if not st.session_state.get("replicate_api_token"):
+            st.stop()
 
     client = get_replicate_client(cfg.replicate_api_token)
 
